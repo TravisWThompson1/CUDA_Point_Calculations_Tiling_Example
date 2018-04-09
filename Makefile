@@ -75,7 +75,7 @@ $(OBJ_DIR)/%.o : $(SRC_DIR)/%.cu
 
 # Clean objects in object directory.
 clean:
-	$(RM) bin/* *.o $(EXE)
+	$(RM) $(OBJ_DIR)/* *.o $(EXE)
 
 
 
