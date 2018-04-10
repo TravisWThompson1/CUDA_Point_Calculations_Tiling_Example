@@ -92,6 +92,43 @@ p[N] = |  0  |  1  |  2  |  3  |  4  |  5  |  6  |  7  |  8  |  9  |  10 |  11 |
                                                           v     v     v     v
                                                           __shared__ points[4] 
 ```
+
+
+### Point-to-Point Interaction
+
+```
+    /////////////////// POINT-TO-POINT CALCULATIONS /////////////////////
+
+        #pragma unroll
+        // Calculate point1 and point2 interactions.
+        for(int i = 0; i < BLOCKWIDTH; i++){
+
+            // Determine proper linear index of interactions[i][j].
+            interaction_ij = blockId.y * BLOCKWIDTH * NUM_OF_POINTS + i * NUM_OF_POINTS + threadId.x;
+
+            // Load point2 from shared memory.
+            point2 = points[i];
+
+            // Check for out of bounds indexing.
+            if ( interaction_ij < (NUM_OF_POINTS * NUM_OF_POINTS) ) {
+
+                // No same index calculations
+                //if (threadId.x != blockId.y * BLOCKWIDTH + i) {
+
+                // Calculate interaction.
+                interactions[blockId.y * BLOCKWIDTH * NUM_OF_POINTS + i * NUM_OF_POINTS +
+                             threadId.x] = interaction_calculation(point1, point2);
+
+                //}
+            }
+        }
+    }
+}
+```
+
+Lastly, each thread calculates a few point-to-point interactions, specifically, the number of calculations is the number of threads in a block. In each iteration, the new output <a href="https://www.codecogs.com/eqnedit.php?latex=V_{ij}" target="_blank"><img src="https://latex.codecogs.com/gif.latex?V_{ij}" title="V_{ij}" /></a> index ```interaction_ij``` is calculated (these indices can become a little complicated). Next, the appropiate ```point2``` is loaded from the shared array ```points```. Some point-to-point calculations forbid a self-interaction (where ```i==j```). This specification is included by commented out in the code above, allowing self-interactions, but this is typically forbidden. Finally, the interaction is calculated between ```point1``` and ```point2``` in the function ```interaction_calculation()``` that is not shown here. This is the function that is particular to the interaction between point i and j. For the example in this code, we use a simple interaction as a proof of concept, where ```interaction_calculation()``` simply returns the sum of ```point1``` and ```point2```. 
+
+A schematic of the calculations performed by one block looks like the following:
 ```
 _____________________________________________________________________________________
        |  0  |  1  |  2  |  3  |  4  |  5  |  6  |  7  |  8  |  9  |  10 |  11 | ...
@@ -122,15 +159,7 @@ ________________________________________________________________________________
 
 
 
-
-
-
-
-
-
-
-
-## CUDA Kernel Code
+## CUDA Kernel Code in kernels.cu
 
 ```
 /**
