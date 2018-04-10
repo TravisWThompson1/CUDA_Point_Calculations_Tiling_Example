@@ -34,7 +34,6 @@ __global__ void d_tiling_calculation(float *p, float *interactions, int NUM_OF_P
     // Define blockwidth parameters for ease of use.
     int BLOCKWIDTH = blockDim.x;
     int BLOCKS_PER_ROW = ceilf(NUM_OF_POINTS / (float) BLOCKWIDTH);
-    unsigned int INTERACTION_SIZE = NUM_OF_POINTS * NUM_OF_POINTS;
     unsigned int interaction_ij;
 
     /////////////////////////// THREAD ID ///////////////////////////////
@@ -64,17 +63,15 @@ __global__ void d_tiling_calculation(float *p, float *interactions, int NUM_OF_P
         // Load this thread's point from global memory to local variable.
         point1 = p[threadId.x];
 
-        // Load secondary point.
-        point2 = p[threadId.y + threadIdx.x];
-
         // Load secondary points from global memory to shared memory.
-        points[threadIdx.x] = point2;
+        points[threadIdx.x] =  p[threadId.y + threadIdx.x];
 
         // Sync after memory load.
         __syncthreads();
 
     /////////////////// POINT-TO-POINT CALCULATIONS /////////////////////
 
+        #pragma unroll
         // Calculate point1 and point2 interactions.
         for(int i = 0; i < BLOCKWIDTH; i++){
 
