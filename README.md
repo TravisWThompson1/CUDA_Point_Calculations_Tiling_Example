@@ -12,8 +12,6 @@ We will use this method to have a block of threads read in data for points i and
 ## CUDA Kernel Code Breakdown
 
 ### Declaration
-First, we initialize the function with the ```__global__``` keyword, allowing this function to be called on the GPU from the CPU. Next, it is helpful to intialize a few useful variables that are esentially parameters of the function, such as the ```BLOCKWIDTH``` and how many blocks will be along one dimension ```BLOCKS_PER_ROW```. These variables are not necessary, but included for convenience. 
-
 ```
 /**
  * Device kernel tiling function used to calculate interactions between all points in p (p[i] and p[j], where i!=j).
@@ -29,12 +27,14 @@ __global__ void d_tiling_calculation(float *p, float *interactions, int NUM_OF_P
     int BLOCKWIDTH = blockDim.x;
     int BLOCKS_PER_ROW = ceilf(NUM_OF_POINTS / (float) BLOCKWIDTH);
     unsigned int interaction_ij;
-
 ```
 
-### Thread ID and Block ID
-Next, the first step that is found in every CUDA kernel is determining the thread ID. It is useful to calculate values such as the thread number and block number in the x,y, and z directions, if more than one dimension is used. For this case, we use two dimensions so we calculated both the x and y values.
+First, we initialize the function with the ```__global__``` keyword, allowing this function to be called on the GPU from the CPU. Next, it is helpful to intialize a few useful variables that are esentially parameters of the function, such as the ```BLOCKWIDTH``` and how many blocks will be along one dimension ```BLOCKS_PER_ROW```. These variables are not necessary, but included for convenience. 
 
+
+
+
+### Thread ID and Block ID
 ```
     /////////////////////////// THREAD ID ///////////////////////////////
 
@@ -50,12 +50,11 @@ Next, the first step that is found in every CUDA kernel is determining the threa
     threadId.y = BLOCKWIDTH * blockId.y;
 ```
 
+Next, the first step that is found in every CUDA kernel is determining the thread ID. It is useful to calculate values such as the thread number and block number in the x,y, and z directions, if more than one dimension is used. For this case, we use two dimensions so we calculated both the x and y values.
+
+
+
 ### Coalesced Memory Accesses
-Now, we discuss the coalesced memory accesses that is so critical in tiling calculations. The variable (```points[]```) is declared as a shared memory variable that is accessable to all threads in a block. The size of ```points[]``` is declared externally as the number of threads in a block in the CUDA kernel call. 
-
-Before reading the point data, we ensure that all of our threads are within the bounds of ```p[]``` with a simple ```if``` conditional statement. The threads that pass this condition are then allowed to read points i and j. Each thread will read its <a href="https://www.codecogs.com/eqnedit.php?latex=p_{i}" target="_blank"><img src="https://latex.codecogs.com/gif.latex?p_{i}" title="p_{i}" /></a> from global memory to ```point1```. Next, each thread will read one of the <a href="https://www.codecogs.com/eqnedit.php?latex=p_{j}" target="_blank"><img src="https://latex.codecogs.com/gif.latex?p_{j}" title="p_{j}" /></a> that will be calculated in an interaction with the other points in the tile. Each thread reads a <a href="https://www.codecogs.com/eqnedit.php?latex=p_{j}" target="_blank"><img src="https://latex.codecogs.com/gif.latex?p_{j}" title="p_{j}" /></a> and writes it into shared memory so that each thread can access it later at a faster speed than a regular global memory read. The memory accesses resemble the following schematic:
-
-
 
 ```
    ////////////////////// MEMORY ACCESS SETUP //////////////////////////
@@ -78,6 +77,44 @@ Before reading the point data, we ensure that all of our threads are within the 
         // Sync after memory load.
         __syncthreads();
 ```
+
+Now, we discuss the coalesced memory accesses that is so critical in tiling calculations. The variable (```points[]```) is declared as a shared memory variable that is accessable to all threads in a block. The size of ```points[]``` is declared externally as the number of threads in a block in the CUDA kernel call. 
+
+Before reading the point data, we ensure that all of our threads are within the bounds of ```p[]``` with a simple ```if``` conditional statement. The threads that pass this condition are then allowed to read points i and j. Each thread will read its <a href="https://www.codecogs.com/eqnedit.php?latex=p_{i}" target="_blank"><img src="https://latex.codecogs.com/gif.latex?p_{i}" title="p_{i}" /></a> from global memory to ```point1```. Next, each thread will read one of the <a href="https://www.codecogs.com/eqnedit.php?latex=p_{j}" target="_blank"><img src="https://latex.codecogs.com/gif.latex?p_{j}" title="p_{j}" /></a> that will be calculated in an interaction with the other points in the tile. Each thread reads a <a href="https://www.codecogs.com/eqnedit.php?latex=p_{j}" target="_blank"><img src="https://latex.codecogs.com/gif.latex?p_{j}" title="p_{j}" /></a> and writes it into shared memory so that each thread can access it later at a faster speed than a regular global memory read. The memory accesses resemble the following schematic if ```blocksize=4```, ```i=0:3```, and ```j=8:11```:
+
+```
+p[N] = |  0  |  1  |  2  |  3  |  4  |  5  |  6  |  7  |  8  |  9  |  10 |  11 |  12 | ... |  N-1  |
+          ^     ^     ^     ^                             ^     ^     ^     ^
+          |     |     |     |                             |     |     |     |                           
+          t0    t1    t2    t3                            t0    t1    t2    t3                   
+                 point1                                   |     |     |     |                     
+                                                          |     |     |     |                  
+                                                          v     v     v     v
+                                                          __shared__ points[4] 
+```
+```
+_____________________________________________________________________________________
+       |  0  |  1  |  2  |  3  |  4  |  5  |  6  |  7  |  8  |  9  |  10 |  11 | ...
+|  0  | 
+|  1  |
+|  2  |
+|  3  |
+|  4  |   t0    t1    t2    t3
+|  5  |   |     |     |     |  
+|  6  |   v     v     v     v 
+|  7  |   
+|  8  |  {  }  {  }  {  }  {  }    <-----|
+|  9  |  {  }  {  }  {  }  {  }    <-----|------------ __shared__ points[4] 
+|  10 |  {  }  {  }  {  }  {  }    <-----|
+|  11 |  {  }  {  }  {  }  {  }    <-----|
+|  12 |
+|  13 |
+| ... |
+| N-1 |
+_____________________________________________________________________________________
+```
+
+
 
 
 
