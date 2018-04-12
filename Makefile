@@ -20,7 +20,7 @@ CC_LIBS=
 
 # NVCC compiler options:
 NVCC=nvcc
-NVCC_FLAGS=
+NVCC_FLAGS=-Wno-deprecated-gpu-targets
 NVCC_LIBS=
 
 # CUDA library directory:

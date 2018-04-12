@@ -6,6 +6,8 @@
 #include "../include/kernels.cuh"
 
 #include <stdio.h>
+#include <iostream>
+#include <cmath>
 
 
 /**
@@ -27,27 +29,21 @@ __device__ float interaction_calculation(float point1, float point2){
  * @param interactions Matrix of resulting interaction terms between p[i] and p[j], where i!=j.
  * @param NUM_OF_POINTS Number of points in array p.
  */
-__global__ void d_tiling_calculation(float *p, float *interactions, int NUM_OF_POINTS){
+template <unsigned int BLOCKSIZE>
+__global__ void tiling_Kernel(float *p, float *interactions, int NUM_OF_POINTS){
 
     /////////////////////////// PARAMETERS //////////////////////////////
 
-    // Define blockwidth parameters for ease of use.
-    int BLOCKWIDTH = blockDim.x;
-    int BLOCKS_PER_ROW = ceilf(NUM_OF_POINTS / (float) BLOCKWIDTH);
-    unsigned int interaction_ij;
+    // Define block parameters for ease of use.
+    unsigned int MATRIX_SIZE = NUM_OF_POINTS * NUM_OF_POINTS;
+    unsigned int index_ij;
 
     /////////////////////////// THREAD ID ///////////////////////////////
 
-    // Initialize blockId and threadId.
-    uint2 threadId, blockId;
-
-    // Calculate blockId in x and y.
-    blockId.x = (blockIdx.y * gridDim.x + blockIdx.x) % BLOCKS_PER_ROW;
-    blockId.y = (blockIdx.y * gridDim.x + blockIdx.x) / (float) BLOCKS_PER_ROW;
-
-    // Calculate initial threadId in x and y.
-    threadId.x = BLOCKWIDTH * blockId.x + threadIdx.x;
-    threadId.y = BLOCKWIDTH * blockId.y;
+    // Calculate the initial thread index in x direction as i in p[i].
+    unsigned int i = BLOCKSIZE * blockIdx.x + threadIdx.x;
+    // Calculate the initial thread index in y direction as j for the starting value of j in p[j].
+    unsigned int j = BLOCKSIZE * blockIdx.y;
 
     ////////////////////// MEMORY ACCESS SETUP //////////////////////////
 
@@ -58,13 +54,13 @@ __global__ void d_tiling_calculation(float *p, float *interactions, int NUM_OF_P
     float point1, point2;
 
     // Check for overreach in x direction.
-    if ( threadId.x < NUM_OF_POINTS ) {
+    if ( i < NUM_OF_POINTS ) {
 
-        // Load this thread's point from global memory to local variable.
-        point1 = p[threadId.x];
+        // Load this thread's point (p[i]) from global memory to local variable.
+        point1 = p[i];
 
-        // Load secondary points from global memory to shared memory.
-        points[threadIdx.x] =  p[threadId.y + threadIdx.x];
+        // Each thread loads a secondary point from global memory to shared memory.
+        points[threadIdx.x] =  p[j + threadIdx.x];
 
         // Sync after memory load.
         __syncthreads();
@@ -73,25 +69,24 @@ __global__ void d_tiling_calculation(float *p, float *interactions, int NUM_OF_P
 
         #pragma unroll
         // Calculate point1 and point2 interactions.
-        for(int i = 0; i < BLOCKWIDTH; i++){
+        for(int iter = 0; iter < BLOCKSIZE; iter++){
 
             // Determine proper linear index of interactions[i][j].
-            interaction_ij = blockId.y * BLOCKWIDTH * NUM_OF_POINTS + i * NUM_OF_POINTS + threadId.x;
+            index_ij = (j + iter) * NUM_OF_POINTS + i;
 
             // Load point2 from shared memory.
-            point2 = points[i];
+            point2 = points[iter];
 
             // Check for out of bounds indexing.
-            if ( interaction_ij < (NUM_OF_POINTS * NUM_OF_POINTS) ) {
+            if ( index_ij < MATRIX_SIZE ) {
 
                 // No same index calculations
-                //if (threadId.x != blockId.y * BLOCKWIDTH + i) {
+                if (i != j) {
 
-                // Calculate interaction.
-                interactions[blockId.y * BLOCKWIDTH * NUM_OF_POINTS + i * NUM_OF_POINTS +
-                             threadId.x] = interaction_calculation(point1, point2);
+                    // Calculate interaction.
+                    interactions[index_ij] = interaction_calculation(point1, point2);
 
-                //}
+                }
             }
         }
     }
@@ -99,26 +94,92 @@ __global__ void d_tiling_calculation(float *p, float *interactions, int NUM_OF_P
 
 
 
-
-void tiling_calculation(float *p, float *interactions, int NUM_OF_POINTS) {
+/**
+ * Wrapper function to call CUDA function tiling_Kernel(). Allocates memory on device and transfers array of points to
+ * device. Calls kernel function and transfers calculated interactions back to host memory.
+ * @param points Array of points used in point-to-point interaction calculations.
+ * @param interactions Martix of point[i] and point[j] calculated interactions.
+ * @param NUM_OF_POINTS Number of points in array points.
+ * @param BLOCKSIZE Blocksize to be used in CUDA kernel.
+ */
+void tiling_calculation(float *points, float *interactions, int NUM_OF_POINTS, int BLOCKSIZE) {
 
     // Initialize device pointers
-    float *d_p, *d_interactions;
+    float *d_points, *d_interactions;
+
+    // Set up CUDA timers
+    cudaEvent_t start, stop;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
 
     // Allocate memory on device.
-    cudaMalloc((void **) &d_p, NUM_OF_POINTS * sizeof(float));
+    cudaMalloc((void **) &d_points, NUM_OF_POINTS * sizeof(float));
     cudaMalloc((void **) &d_interactions, NUM_OF_POINTS * NUM_OF_POINTS * sizeof(float));
 
     // Transfer variables from cpu to gpu.
-    cudaMemcpy(d_p, p, NUM_OF_POINTS * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_points, points, NUM_OF_POINTS * sizeof(float), cudaMemcpyHostToDevice);
     cudaMemcpy(d_interactions, interactions, NUM_OF_POINTS * NUM_OF_POINTS * sizeof(float), cudaMemcpyHostToDevice);
 
     // Determine blocksize and gridsize.
     dim3 numThreads(BLOCKSIZE, 1, 1);
     dim3 numBlocks(ceil(NUM_OF_POINTS / (float) numThreads.x), ceil(NUM_OF_POINTS / (float) numThreads.x));
 
-    // Call tiling routine.
-    d_tiling_calculation<<< numBlocks, numThreads, BLOCKSIZE*sizeof(float) >>>(d_p, d_interactions, NUM_OF_POINTS);
+
+    // Call CUDA timers.
+    cudaEventRecord(start);
+
+    // Call CUDA kernel.
+    switch( BLOCKSIZE ) {
+        case 1:
+            tiling_Kernel <1> <<< numBlocks, numThreads, 1*sizeof(float) >>> (d_points, d_interactions, NUM_OF_POINTS);
+            break;
+        case 2:
+            tiling_Kernel <2> <<< numBlocks, numThreads, 2*sizeof(float) >>> (d_points, d_interactions, NUM_OF_POINTS);
+            break;
+        case 4:
+            tiling_Kernel <4> <<< numBlocks, numThreads, 4*sizeof(float) >>> (d_points, d_interactions, NUM_OF_POINTS);
+            break;
+        case 8:
+            tiling_Kernel <8> <<< numBlocks, numThreads, 8*sizeof(float) >>> (d_points, d_interactions, NUM_OF_POINTS);
+            break;
+        case 16:
+            tiling_Kernel <16> <<< numBlocks, numThreads, 16*sizeof(float) >>> (d_points, d_interactions, NUM_OF_POINTS);
+            break;
+        case 32:
+            tiling_Kernel <32> <<< numBlocks, numThreads, 32*sizeof(float) >>> (d_points, d_interactions, NUM_OF_POINTS);
+            break;
+        case 64:
+            tiling_Kernel <64> <<< numBlocks, numThreads, 64*sizeof(float) >>> (d_points, d_interactions, NUM_OF_POINTS);
+            break;
+        case 128:
+            tiling_Kernel <128> <<< numBlocks, numThreads, 128*sizeof(float) >>> (d_points, d_interactions, NUM_OF_POINTS);
+            break;
+        case 256:
+            tiling_Kernel <256> <<< numBlocks, numThreads, 256*sizeof(float) >>> (d_points, d_interactions, NUM_OF_POINTS);
+            break;
+        case 512:
+            tiling_Kernel <512> <<< numBlocks, numThreads, 512*sizeof(float) >>> (d_points, d_interactions, NUM_OF_POINTS);
+            break;
+        case 1024:
+            tiling_Kernel <1024> <<< numBlocks, numThreads, 1024*sizeof(float) >>> (d_points, d_interactions, NUM_OF_POINTS);
+            break;
+    }
+
+    // Stop CUDA timer.
+    cudaEventRecord(stop);
+
+    // End CUDA timers.
+    cudaEventSynchronize(stop);
+    float milliseconds = 0;
+    cudaEventElapsedTime(&milliseconds, start, stop);
+
+    // Effective bandwidth calculation. ((2 reads + #BLOCKSIZE writes) * 4 bytes) / 10^9 / time(seconds)
+    float effectiveBandwidth = (( 2 + BLOCKSIZE ) * 4 ) / (milliseconds / (float) 1000) / (float) pow(10,9);
+    // Effective GLOPS calculation. ((# FLOPS in one thread) * (# of threads total) / 10^9 / time(seconds)
+    float effectiveGFLOPS = (( 5 + BLOCKSIZE * 4 ) * (BLOCKSIZE * numBlocks.x * numBlocks.y)) / (milliseconds / (float) 1000) / (float) pow(10,9);
+
+    // Print out results.
+    std::cout << "BLOCKSIZE = " << BLOCKSIZE << "   \tTime [ms] = " << milliseconds << "\tEff. Bandwidth = " << effectiveBandwidth <<"\tEff. GFLOPS = " << effectiveGFLOPS << std::endl;
 
     // Transfer variables from gpu to cpu.
     cudaMemcpy(interactions, d_interactions, NUM_OF_POINTS * NUM_OF_POINTS * sizeof(float), cudaMemcpyDeviceToHost);

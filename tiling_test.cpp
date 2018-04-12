@@ -2,11 +2,23 @@
 #include "include/kernels.cuh"
 
 
+void printOutput(float *r, int NUM_OF_POINTS){
+    // Print output.
+    for (int i = 0; i < NUM_OF_POINTS; i++){
+        for (int j = 0; j < NUM_OF_POINTS; j++){
+            std::cout << r[i * NUM_OF_POINTS + j] << " ";
+        }
+        std::cout << "\n";
+    }
+}
+
+
 
 int main(){
 
     // Initialize tile size and number of tiles.
-    int NUM_OF_POINTS = 40;
+    int NUM_OF_POINTS = 1000;
+    int BLOCKSIZE;
 
     // Initialize array of points p_i
     float p[NUM_OF_POINTS];
@@ -24,22 +36,21 @@ int main(){
 
 
     // Run tiling calculations on GPU.
-    tiling_calculation(p, r, NUM_OF_POINTS);
+    tiling_calculation(p, r, NUM_OF_POINTS, 1);
+    tiling_calculation(p, r, NUM_OF_POINTS, 2);
+    tiling_calculation(p, r, NUM_OF_POINTS, 4);
+    tiling_calculation(p, r, NUM_OF_POINTS, 8);
+    tiling_calculation(p, r, NUM_OF_POINTS, 16);
+    tiling_calculation(p, r, NUM_OF_POINTS, 32);
+    tiling_calculation(p, r, NUM_OF_POINTS, 64);
+    tiling_calculation(p, r, NUM_OF_POINTS, 128);
+    tiling_calculation(p, r, NUM_OF_POINTS, 256);
+    tiling_calculation(p, r, NUM_OF_POINTS, 512);
+    tiling_calculation(p, r, NUM_OF_POINTS, 1024);
+    
 
     // Print output.
-    for (int i = 0; i < NUM_OF_POINTS; i++){
-        for (int j = 0; j < NUM_OF_POINTS; j++){
-            std::cout << r[i * NUM_OF_POINTS + j] << " ";
-        }
-        std::cout << "\n";
-    }
-
-
-
-
-
-
-
+    //printOutput(r, NUM_OF_POINTS);
 
     return 0;
 }
