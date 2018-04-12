@@ -14,23 +14,23 @@ We will use this method to have a block of threads read in data for points i and
 ### Declaration
 ```
 /**
- * Device kernel tiling function used to calculate interactions between all points in p (p[i] and
- * p[j], where i!=j).
+ * Device kernel tiling function used to calculate interactions between all points in p (p[i] and p[j], where i!=j).
  * @param p Array of points p[i] to calculation interactions between (p[i] and p[j], where i!=j).
  * @param interactions Matrix of resulting interaction terms between p[i] and p[j], where i!=j.
  * @param NUM_OF_POINTS Number of points in array p.
  */
-__global__ void d_tiling_calculation(float *p, float *interactions, int NUM_OF_POINTS){
+template <unsigned int BLOCKSIZE>
+__global__ void tiling_Kernel(float *p, float *interactions, int NUM_OF_POINTS){
 
     /////////////////////////// PARAMETERS //////////////////////////////
 
-    // Define blockwidth parameters for ease of use.
-    int BLOCKWIDTH = blockDim.x;
-    int BLOCKS_PER_ROW = ceilf(NUM_OF_POINTS / (float) BLOCKWIDTH);
-    unsigned int interaction_ij;
+    // Define block parameters for ease of use.
+    unsigned int MATRIX_SIZE = NUM_OF_POINTS * NUM_OF_POINTS;
+    unsigned int index_ij;
+
 ```
 
-First, we initialize the function with the ```__global__``` keyword, allowing this function to be called on the GPU from the CPU. Next, it is helpful to intialize a few useful variables that are esentially parameters of the function, such as the ```BLOCKWIDTH``` and how many blocks will be along one dimension ```BLOCKS_PER_ROW```. These variables are not necessary, but included for convenience. 
+First, we initialize the function with the ```__global__``` keyword, allowing this function to be called on the GPU from the CPU. The function takes in a template parameter that is the blocksize (number of threads per block), which will be used may be used by the compiler in further optimizations. Having the blocksize as a known constant value can be used to improve efficiency in later steps that are not included here. Next, it is helpful to intialize a few useful variables such as the total matrix size so that we only compute it once, rather than many times in a for loop. 
 
 
 
@@ -39,26 +39,20 @@ First, we initialize the function with the ```__global__``` keyword, allowing th
 ```
     /////////////////////////// THREAD ID ///////////////////////////////
 
-    // Initialize blockId and threadId.
-    uint2 threadId, blockId;
-
-    // Calculate blockId in x and y.
-    blockId.x = (blockIdx.y * gridDim.x + blockIdx.x) % BLOCKS_PER_ROW;
-    blockId.y = (blockIdx.y * gridDim.x + blockIdx.x) / (float) BLOCKS_PER_ROW;
-
-    // Calculate initial threadId in x and y.
-    threadId.x = BLOCKWIDTH * blockId.x + threadIdx.x;
-    threadId.y = BLOCKWIDTH * blockId.y;
+    // Calculate the initial thread index in x direction as i in p[i].
+    unsigned int i = BLOCKSIZE * blockIdx.x + threadIdx.x;
+    // Calculate the initial thread index in y direction as j for the starting value of j in p[j].
+    unsigned int j = BLOCKSIZE * blockIdx.y;
 ```
 
-Next, the first step that is found in every CUDA kernel is determining the thread ID. It is useful to calculate values such as the thread number and block number in the x,y, and z directions, if more than one dimension is used. For this case, we use two dimensions so we calculated both the x and y values.
+Next, the first step that is found in every CUDA kernel is determining the thread ID. It is useful to calculate values such as the thread number and block number in the x,y, and z directions, if more than one dimension is used. For this case, we use two dimensions so we calculated both the x and y values of the thread ID's, which are in fact our indices ```i``` and ```j``` that were mentioned earlier.
 
 
 
 ### Coalesced Memory Accesses
 
 ```
-   ////////////////////// MEMORY ACCESS SETUP //////////////////////////
+    ////////////////////// MEMORY ACCESS SETUP //////////////////////////
 
     // Initialize shared memory with size of number of threads per block.
     extern __shared__ float points[];
@@ -67,13 +61,13 @@ Next, the first step that is found in every CUDA kernel is determining the threa
     float point1, point2;
 
     // Check for overreach in x direction.
-    if ( threadId.x < NUM_OF_POINTS ) {
+    if ( i < NUM_OF_POINTS ) {
 
-        // Load this thread's point from global memory to local variable.
-        point1 = p[threadId.x];
+        // Load this thread's point (p[i]) from global memory to local variable.
+        point1 = p[i];
 
-        // Load secondary points from global memory to shared memory.
-        points[threadIdx.x] =  p[threadId.y + threadIdx.x];
+        // Each thread loads a secondary point from global memory to shared memory.
+        points[threadIdx.x] =  p[j + threadIdx.x];
 
         // Sync after memory load.
         __syncthreads();
@@ -102,32 +96,31 @@ p[N] = |  0  |  1  |  2  |  3  |  4  |  5  |  6  |  7  |  8  |  9  |  10 |  11 |
 
         #pragma unroll
         // Calculate point1 and point2 interactions.
-        for(int i = 0; i < BLOCKWIDTH; i++){
+        for(int iter = 0; iter < BLOCKSIZE; iter++){
 
             // Determine proper linear index of interactions[i][j].
-            interaction_ij = blockId.y * BLOCKWIDTH * NUM_OF_POINTS + i * NUM_OF_POINTS + threadId.x;
+            index_ij = (j + iter) * NUM_OF_POINTS + i;
 
             // Load point2 from shared memory.
-            point2 = points[i];
+            point2 = points[iter];
 
             // Check for out of bounds indexing.
-            if ( interaction_ij < (NUM_OF_POINTS * NUM_OF_POINTS) ) {
+            if ( index_ij < MATRIX_SIZE ) {
 
                 // No same index calculations
-                //if (threadId.x != blockId.y * BLOCKWIDTH + i) {
+                if (i != j) {
 
-                // Calculate interaction.
-                interactions[blockId.y * BLOCKWIDTH * NUM_OF_POINTS + i * NUM_OF_POINTS +
-                             threadId.x] = interaction_calculation(point1, point2);
+                    // Calculate interaction.
+                    interactions[index_ij] = interaction_calculation(point1, point2);
 
-                //}
+                }
             }
         }
     }
 }
 ```
 
-Lastly, each thread calculates a few point-to-point interactions, specifically, the number of calculations is the number of threads in a block. In each iteration, the new output <a href="https://www.codecogs.com/eqnedit.php?latex=V_{ij}" target="_blank"><img src="https://latex.codecogs.com/gif.latex?V_{ij}" title="V_{ij}" /></a> index ```interaction_ij``` is calculated (these indices can become a little complicated). Next, the appropiate ```point2``` is loaded from the shared array ```points```. Some point-to-point calculations forbid a self-interaction (where ```i==j```). This specification is included by commented out in the code above, allowing self-interactions, but this is typically forbidden. Finally, the interaction is calculated between ```point1``` and ```point2``` in the function ```interaction_calculation()``` that is not shown here. This is the function that is particular to the interaction between point i and j. For the example in this code, we use a simple interaction as a proof of concept, where ```interaction_calculation()``` simply returns the sum of ```point1``` and ```point2```. 
+Lastly, each thread calculates a few point-to-point interactions, specifically, the number of calculations is the number of threads in a block. In each iteration, the new output <a href="https://www.codecogs.com/eqnedit.php?latex=V_{ij}" target="_blank"><img src="https://latex.codecogs.com/gif.latex?V_{ij}" title="V_{ij}" /></a> index ```index_ij``` is calculated (these indices can become a little complicated). Next, the appropiate ```point2``` is loaded from the shared array ```points```. Some point-to-point calculations forbid a self-interaction (where ```i==j```). This specification is included but can be commented out in the code above allowing self-interactions, but this is typically unusual. Finally, the interaction is calculated between ```point1``` and ```point2``` in the function ```interaction_calculation()``` that is not shown here. This is the function that is particular to the interaction between point i and j. For the example in this code, we use a simple interaction as a proof of concept, where ```interaction_calculation()``` simply returns the sum of ```point1``` and ```point2```. 
 
 A schematic of the calculations performed by one block looks like the following:
 ```
@@ -154,9 +147,53 @@ ________________________________________________________________________________
 
 
 
+### Launching the CUDA Kernel
+
+```
+// Call CUDA kernel.
+    switch( BLOCKSIZE ) {
+        case 1:
+            tiling_Kernel <1> <<< numBlocks, numThreads, 1*sizeof(float) >>> (d_points, d_interactions, NUM_OF_POINTS);
+            break;
+        case 2:
+            tiling_Kernel <2> <<< numBlocks, numThreads, 2*sizeof(float) >>> (d_points, d_interactions, NUM_OF_POINTS);
+            break;
+        case 4:
+            tiling_Kernel <4> <<< numBlocks, numThreads, 4*sizeof(float) >>> (d_points, d_interactions, NUM_OF_POINTS);
+            break;
+        case 8:
+            tiling_Kernel <8> <<< numBlocks, numThreads, 8*sizeof(float) >>> (d_points, d_interactions, NUM_OF_POINTS);
+            break;
+        case 16:
+            tiling_Kernel <16> <<< numBlocks, numThreads, 16*sizeof(float) >>> (d_points, d_interactions, NUM_OF_POINTS);
+            break;
+        case 32:
+            tiling_Kernel <32> <<< numBlocks, numThreads, 32*sizeof(float) >>> (d_points, d_interactions, NUM_OF_POINTS);
+            break;
+        case 64:
+            tiling_Kernel <64> <<< numBlocks, numThreads, 64*sizeof(float) >>> (d_points, d_interactions, NUM_OF_POINTS);
+            break;
+        case 128:
+            tiling_Kernel <128> <<< numBlocks, numThreads, 128*sizeof(float) >>> (d_points, d_interactions, NUM_OF_POINTS);
+            break;
+        case 256:
+            tiling_Kernel <256> <<< numBlocks, numThreads, 256*sizeof(float) >>> (d_points, d_interactions, NUM_OF_POINTS);
+            break;
+        case 512:
+            tiling_Kernel <512> <<< numBlocks, numThreads, 512*sizeof(float) >>> (d_points, d_interactions, NUM_OF_POINTS);
+            break;
+        case 1024:
+            tiling_Kernel <1024> <<< numBlocks, numThreads, 1024*sizeof(float) >>> (d_points, d_interactions, NUM_OF_POINTS);
+            break;
+    }
+```
+
+Finally, launching the CUDA kernel is shown in the code above, where a switch statement is used to call the ```tiling_Kernel()``` function with a specific blocksize. Launching the kernel in a switch statement like this is not necessary. However, in using a switch statement in this way, the template argument (```BLOCKSIZE```) is a constant. Therefore the kernel can be further optimized for certain blocksize inputs, such as if the blocksize is greater than or less than the actual size of the working data. This optimization is not added into the code here, but it is a good exercise to include this regardless (although it does increase compile time).
 
 
+### What BLOCKSIZE Should Be Used?
 
+This is always a question that should be asked for every CUDA kernel. For this code, a test case was written to deteremine the fastest blocksize. The result turned out that a blocksize of ```128``` yielded the fastest results with the highest GFLOPS. Feel free to compile and run the test yourself.
 
 
 
@@ -169,27 +206,21 @@ ________________________________________________________________________________
  * @param interactions Matrix of resulting interaction terms between p[i] and p[j], where i!=j.
  * @param NUM_OF_POINTS Number of points in array p.
  */
-__global__ void d_tiling_calculation(float *p, float *interactions, int NUM_OF_POINTS){
+template <unsigned int BLOCKSIZE>
+__global__ void tiling_Kernel(float *p, float *interactions, int NUM_OF_POINTS){
 
     /////////////////////////// PARAMETERS //////////////////////////////
 
-    // Define blockwidth parameters for ease of use.
-    int BLOCKWIDTH = blockDim.x;
-    int BLOCKS_PER_ROW = ceilf(NUM_OF_POINTS / (float) BLOCKWIDTH);
-    unsigned int interaction_ij;
+    // Define block parameters for ease of use.
+    unsigned int MATRIX_SIZE = NUM_OF_POINTS * NUM_OF_POINTS;
+    unsigned int index_ij;
 
     /////////////////////////// THREAD ID ///////////////////////////////
 
-    // Initialize blockId and threadId.
-    uint2 threadId, blockId;
-
-    // Calculate blockId in x and y.
-    blockId.x = (blockIdx.y * gridDim.x + blockIdx.x) % BLOCKS_PER_ROW;
-    blockId.y = (blockIdx.y * gridDim.x + blockIdx.x) / (float) BLOCKS_PER_ROW;
-
-    // Calculate initial threadId in x and y.
-    threadId.x = BLOCKWIDTH * blockId.x + threadIdx.x;
-    threadId.y = BLOCKWIDTH * blockId.y;
+    // Calculate the initial thread index in x direction as i in p[i].
+    unsigned int i = BLOCKSIZE * blockIdx.x + threadIdx.x;
+    // Calculate the initial thread index in y direction as j for the starting value of j in p[j].
+    unsigned int j = BLOCKSIZE * blockIdx.y;
 
     ////////////////////// MEMORY ACCESS SETUP //////////////////////////
 
@@ -200,13 +231,13 @@ __global__ void d_tiling_calculation(float *p, float *interactions, int NUM_OF_P
     float point1, point2;
 
     // Check for overreach in x direction.
-    if ( threadId.x < NUM_OF_POINTS ) {
+    if ( i < NUM_OF_POINTS ) {
 
-        // Load this thread's point from global memory to local variable.
-        point1 = p[threadId.x];
+        // Load this thread's point (p[i]) from global memory to local variable.
+        point1 = p[i];
 
-        // Load secondary points from global memory to shared memory.
-        points[threadIdx.x] =  p[threadId.y + threadIdx.x];
+        // Each thread loads a secondary point from global memory to shared memory.
+        points[threadIdx.x] =  p[j + threadIdx.x];
 
         // Sync after memory load.
         __syncthreads();
@@ -215,25 +246,24 @@ __global__ void d_tiling_calculation(float *p, float *interactions, int NUM_OF_P
 
         #pragma unroll
         // Calculate point1 and point2 interactions.
-        for(int i = 0; i < BLOCKWIDTH; i++){
+        for(int iter = 0; iter < BLOCKSIZE; iter++){
 
             // Determine proper linear index of interactions[i][j].
-            interaction_ij = blockId.y * BLOCKWIDTH * NUM_OF_POINTS + i * NUM_OF_POINTS + threadId.x;
+            index_ij = (j + iter) * NUM_OF_POINTS + i;
 
             // Load point2 from shared memory.
-            point2 = points[i];
+            point2 = points[iter];
 
             // Check for out of bounds indexing.
-            if ( interaction_ij < (NUM_OF_POINTS * NUM_OF_POINTS) ) {
+            if ( index_ij < MATRIX_SIZE ) {
 
                 // No same index calculations
-                //if (threadId.x != blockId.y * BLOCKWIDTH + i) {
+                if (i != j) {
 
-                // Calculate interaction.
-                interactions[blockId.y * BLOCKWIDTH * NUM_OF_POINTS + i * NUM_OF_POINTS +
-                             threadId.x] = interaction_calculation(point1, point2);
+                    // Calculate interaction.
+                    interactions[index_ij] = interaction_calculation(point1, point2);
 
-                //}
+                }
             }
         }
     }
