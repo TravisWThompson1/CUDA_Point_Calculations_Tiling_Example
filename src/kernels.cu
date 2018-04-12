@@ -173,13 +173,11 @@ void tiling_calculation(float *points, float *interactions, int NUM_OF_POINTS, i
     float milliseconds = 0;
     cudaEventElapsedTime(&milliseconds, start, stop);
 
-    // Effective bandwidth calculation. ((2 reads + #BLOCKSIZE writes) * 4 bytes) / 10^9 / time(seconds)
-    float effectiveBandwidth = (( 2 + BLOCKSIZE ) * 4 ) / (milliseconds / (float) 1000) / (float) pow(10,9);
     // Effective GLOPS calculation. ((# FLOPS in one thread) * (# of threads total) / 10^9 / time(seconds)
     float effectiveGFLOPS = (( 5 + BLOCKSIZE * 4 ) * (BLOCKSIZE * numBlocks.x * numBlocks.y)) / (milliseconds / (float) 1000) / (float) pow(10,9);
 
     // Print out results.
-    std::cout << "BLOCKSIZE = " << BLOCKSIZE << "   \tTime [ms] = " << milliseconds << "\tEff. Bandwidth = " << effectiveBandwidth <<"\tEff. GFLOPS = " << effectiveGFLOPS << std::endl;
+    std::cout << "BLOCKSIZE = " << BLOCKSIZE << "   \tTime [ms] = " << milliseconds << "\tEff. GFLOPS = " << effectiveGFLOPS << std::endl;
 
     // Transfer variables from gpu to cpu.
     cudaMemcpy(interactions, d_interactions, NUM_OF_POINTS * NUM_OF_POINTS * sizeof(float), cudaMemcpyDeviceToHost);
