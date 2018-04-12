@@ -14,7 +14,8 @@ We will use this method to have a block of threads read in data for points i and
 ### Declaration
 ```
 /**
- * Device kernel tiling function used to calculate interactions between all points in p (p[i] and p[j], where i!=j).
+ * Device kernel tiling function used to calculate interactions between all points in p (p[i] and
+ * p[j], where i!=j).
  * @param p Array of points p[i] to calculation interactions between (p[i] and p[j], where i!=j).
  * @param interactions Matrix of resulting interaction terms between p[i] and p[j], where i!=j.
  * @param NUM_OF_POINTS Number of points in array p.
